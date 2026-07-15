@@ -90,6 +90,7 @@ jobs:
         with:
           repository: bignormal/agentera-claw
           ref: ${{ vars.DESKTOP_RUNTIME_BUILDER_SHA }}
+          ssh-key: ${{ secrets.DESKTOP_RUNTIME_BUILDER_SSH_KEY }}
           path: runtime-builder
           persist-credentials: false
 

@@ -53,6 +53,20 @@ def test_desktop_runtime_workflow_uses_tagged_local_source_and_pinned_builder() 
     assert "==${{" not in text
 
 
+def test_desktop_runtime_workflow_uses_scoped_key_for_private_builder() -> None:
+    steps = _workflow()["jobs"]["runtime"]["steps"]
+    builder_checkout = next(
+        step for step in steps if step["name"] == "Checkout immutable desktop builder"
+    )
+
+    assert builder_checkout["with"]["ssh-key"] == "${{ secrets.DESKTOP_RUNTIME_BUILDER_SSH_KEY }}"
+    assert builder_checkout["with"]["persist-credentials"] == "false"
+
+    secret_reference = "secrets.DESKTOP_RUNTIME_BUILDER_SSH_KEY"
+    other_steps = [step for step in steps if step is not builder_checkout]
+    assert all(secret_reference not in str(step) for step in other_steps)
+
+
 def test_desktop_runtime_workflow_never_silently_clobbers_assets() -> None:
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "replace_existing" in text
