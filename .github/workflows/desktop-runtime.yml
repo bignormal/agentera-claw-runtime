@@ -1,0 +1,351 @@
+name: Publish Desktop Runtime Assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing Runtime GitHub Release tag
+        required: true
+        type: string
+      replace_existing:
+        description: Explicitly delete and rebuild this platform's existing assets
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-runtime-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RUNTIME_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  BUILDER_REPOSITORY: bignormal/agentera-claw
+  BUILDER_SHA: ${{ vars.DESKTOP_RUNTIME_BUILDER_SHA }}
+
+jobs:
+  build:
+    name: Build Runtime (${{ matrix.platform }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: mac-arm64
+            runner: macos-15
+            target_os: darwin
+            target_arch: arm64
+          - platform: mac-x64
+            runner: macos-15-intel
+            target_os: darwin
+            target_arch: x64
+          - platform: win-x64
+            runner: windows-latest
+            target_os: win32
+            target_arch: x64
+          - platform: linux-x64
+            runner: ubuntu-22.04
+            target_os: linux
+            target_arch: x64
+          - platform: linux-arm64
+            runner: ubuntu-22.04-arm
+            target_os: linux
+            target_arch: arm64
+            skip_browser_runtime: "true"
+
+    steps:
+      - name: Validate immutable inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::DESKTOP_RUNTIME_BUILDER_SHA must be a lowercase 40-character commit"
+            exit 1
+          fi
+          gh release view "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
+      - name: Checkout publisher tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: publisher
+          persist-credentials: false
+
+      - name: Checkout tagged Runtime source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ env.RUNTIME_TAG }}
+          path: runtime-source
+          persist-credentials: false
+
+      - name: Checkout immutable desktop builder
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: bignormal/agentera-claw
+          ref: ${{ vars.DESKTOP_RUNTIME_BUILDER_SHA }}
+          ssh-key: ${{ secrets.DESKTOP_RUNTIME_BUILDER_SSH_KEY }}
+          path: runtime-builder
+          persist-credentials: false
+
+      - name: Resolve source identity and asset names
+        id: identity
+        shell: bash
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ARCH: ${{ matrix.target_arch }}
+        run: |
+          source_sha="$(git -C runtime-source rev-parse HEAD)"
+          builder_sha="$(git -C runtime-builder rev-parse HEAD)"
+          test "$builder_sha" = "$BUILDER_SHA"
+          version="$(python -c 'import tomllib; print(tomllib.load(open("runtime-source/pyproject.toml", "rb"))["project"]["version"])')"
+          asset="$(HERMES_VERSION="$version" node runtime-builder/packages/desktop/scripts/runtime-asset-name.mjs)"
+          manifest="$(HERMES_VERSION="$version" node runtime-builder/packages/desktop/scripts/runtime-asset-name.mjs --manifest)"
+          {
+            echo "source_sha=$source_sha"
+            echo "builder_sha=$builder_sha"
+            echo "version=$version"
+            echo "asset=$asset"
+            echo "manifest=$manifest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Runtime bundle source
+        id: assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.identity.outputs.asset }}
+          MANIFEST: ${{ steps.identity.outputs.manifest }}
+          PLATFORM: ${{ matrix.platform }}
+          REPLACE: ${{ inputs.replace_existing || 'false' }}
+        run: |
+          existing="$(gh release view "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          expected=("$ASSET" "$ASSET.sha256" "$MANIFEST")
+          found=()
+          for name in "${expected[@]}"; do
+            if printf '%s\n' "$existing" | grep -Fx "$name" >/dev/null; then
+              found+=("$name")
+            fi
+          done
+          if [ "$REPLACE" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif [ "${#found[@]}" -eq 0 ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif [ "${#found[@]}" -eq 3 ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Partial Runtime asset set exists for $PLATFORM: ${found[*]}"
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        if: steps.assets.outputs.build == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install uv
+        if: steps.assets.outputs.build == 'true'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
+
+      - name: Install desktop builder dependencies
+        if: steps.assets.outputs.build == 'true'
+        run: npm ci --prefix runtime-builder/packages/desktop --no-audit --no-fund
+
+      - name: Prepare Runtime from tagged local source
+        if: steps.assets.outputs.build == 'true'
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ARCH: ${{ matrix.target_arch }}
+          HERMES_VERSION: ${{ steps.identity.outputs.version }}
+          HERMES_PACKAGE: ${{ github.workspace }}/runtime-source[mcp,messaging,slack,wecom,dingtalk,feishu]
+          HERMES_SKIP_BROWSER_RUNTIME: ${{ matrix.skip_browser_runtime || 'false' }}
+        run: npm --prefix runtime-builder/packages/desktop run prepare:runtime
+
+      - name: Prove hermes-agent came from the tagged checkout
+        if: steps.assets.outputs.build == 'true'
+        shell: bash
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+          PLATFORM: ${{ matrix.platform }}
+          EXPECTED_VERSION: ${{ steps.identity.outputs.version }}
+          RUNTIME_SOURCE: ${{ github.workspace }}/runtime-source
+        run: |
+          if [ "$TARGET_OS" = "win32" ]; then
+            python_bin="runtime-builder/packages/desktop/resources/python/$PLATFORM/python.exe"
+          else
+            python_bin="runtime-builder/packages/desktop/resources/python/$PLATFORM/bin/python3"
+          fi
+          "$python_bin" - <<'PY'
+          import importlib.metadata as metadata
+          import json
+          import os
+          from pathlib import Path
+
+          distribution = metadata.distribution("hermes-agent")
+          direct_url = json.loads(distribution.read_text("direct_url.json") or "{}")
+          expected_url = Path(os.environ["RUNTIME_SOURCE"]).resolve().as_uri()
+          assert distribution.version == os.environ["EXPECTED_VERSION"]
+          assert direct_url.get("url") == expected_url, (direct_url, expected_url)
+          PY
+
+      - name: Package Runtime with provenance
+        if: steps.assets.outputs.build == 'true'
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ARCH: ${{ matrix.target_arch }}
+          HERMES_VERSION: ${{ steps.identity.outputs.version }}
+          RUNTIME_PROVENANCE_RELEASE_REPOSITORY: ${{ github.repository }}
+          RUNTIME_PROVENANCE_RELEASE_TAG: ${{ env.RUNTIME_TAG }}
+          RUNTIME_PROVENANCE_SOURCE_REPOSITORY: ${{ github.repository }}
+          RUNTIME_PROVENANCE_SOURCE_REF: ${{ env.RUNTIME_TAG }}
+          RUNTIME_PROVENANCE_SOURCE_COMMIT: ${{ steps.identity.outputs.source_sha }}
+          RUNTIME_PROVENANCE_BUILDER_REPOSITORY: bignormal/agentera-claw
+          RUNTIME_PROVENANCE_BUILDER_COMMIT: ${{ steps.identity.outputs.builder_sha }}
+        run: npm --prefix runtime-builder/packages/desktop run package:runtime
+
+      - name: Stage complete Runtime bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.identity.outputs.asset }}
+          BUILD: ${{ steps.assets.outputs.build }}
+          BUILDER_COMMIT: ${{ steps.identity.outputs.builder_sha }}
+          MANIFEST: ${{ steps.identity.outputs.manifest }}
+          PLATFORM: ${{ matrix.platform }}
+          SOURCE_COMMIT: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          rm -rf runtime-bundle
+          mkdir runtime-bundle
+          if [ "$BUILD" = "true" ]; then
+            output="runtime-builder/packages/desktop/release/runtime"
+            cp "$output/$ASSET" "$output/$ASSET.sha256" "$output/$MANIFEST" runtime-bundle/
+          else
+            gh release download "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --pattern "$ASSET.sha256" --pattern "$MANIFEST" --dir runtime-bundle
+          fi
+          python publisher/scripts/desktop_runtime_release_contract.py --directory runtime-bundle --platform "$PLATFORM" --release-repository "$GITHUB_REPOSITORY" --release-tag "$RUNTIME_TAG" --source-commit "$SOURCE_COMMIT" --builder-commit "$BUILDER_COMMIT"
+
+      - name: Transfer validated Runtime bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-runtime-${{ matrix.platform }}
+          path: runtime-bundle/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Publish Runtime (${{ matrix.platform }})
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - mac-arm64
+          - mac-x64
+          - win-x64
+          - linux-x64
+          - linux-arm64
+
+    steps:
+      - name: Checkout trusted publisher tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: publisher
+          persist-credentials: false
+
+      - name: Download validated Runtime bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-runtime-${{ matrix.platform }}
+          path: runtime-bundle
+
+      - name: Revalidate bundle on isolated publisher
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          if [[ ! "$BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::DESKTOP_RUNTIME_BUILDER_SHA must be a lowercase 40-character commit"
+            exit 1
+          fi
+          encoded_tag="$(jq -rn --arg tag "$RUNTIME_TAG" '$tag | @uri')"
+          reference="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$encoded_tag")"
+          object_type="$(jq -r '.object.type' <<<"$reference")"
+          source_sha="$(jq -r '.object.sha' <<<"$reference")"
+          depth=0
+          while [ "$object_type" = "tag" ]; do
+            depth=$((depth + 1))
+            if [ "$depth" -gt 5 ]; then
+              echo "::error::Runtime tag has more than five levels of indirection"
+              exit 1
+            fi
+            tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$source_sha")"
+            object_type="$(jq -r '.object.type' <<<"$tag_object")"
+            source_sha="$(jq -r '.object.sha' <<<"$tag_object")"
+          done
+          if [ "$object_type" != "commit" ] || [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Runtime tag does not resolve to an immutable commit"
+            exit 1
+          fi
+          version="$(python publisher/scripts/desktop_runtime_release_contract.py --directory runtime-bundle --platform "$PLATFORM" --release-repository "$GITHUB_REPOSITORY" --release-tag "$RUNTIME_TAG" --source-commit "$source_sha" --builder-commit "$BUILDER_SHA")"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
+            echo "::error::Runtime version contains unsafe asset-name characters"
+            exit 1
+          fi
+          {
+            echo "source_sha=$source_sha"
+            echo "asset=hermes-runtime-hermes-agent-$version-$PLATFORM.tar.gz"
+            echo "manifest=hermes-runtime-$PLATFORM.json"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable Runtime assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.identity.outputs.asset }}
+          MANIFEST: ${{ steps.identity.outputs.manifest }}
+          SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+          PLATFORM: ${{ matrix.platform }}
+          REPLACE: ${{ inputs.replace_existing || 'false' }}
+        run: |
+          existing="$(gh release view "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          expected=("$ASSET" "$ASSET.sha256" "$MANIFEST")
+          found=()
+          for name in "${expected[@]}"; do
+            if printf '%s\n' "$existing" | grep -Fx "$name" >/dev/null; then
+              found+=("$name")
+            fi
+          done
+          if [ "$REPLACE" = "true" ]; then
+            for name in "${found[@]}"; do
+              gh release delete-asset "$RUNTIME_TAG" "$name" --repo "$GITHUB_REPOSITORY" --yes
+            done
+          elif [ "${#found[@]}" -eq 0 ]; then
+            :
+          elif [ "${#found[@]}" -eq 3 ]; then
+            mkdir existing-release
+            gh release download "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --pattern "$ASSET.sha256" --pattern "$MANIFEST" --dir existing-release
+            python publisher/scripts/desktop_runtime_release_contract.py --directory existing-release --platform "$PLATFORM" --release-repository "$GITHUB_REPOSITORY" --release-tag "$RUNTIME_TAG" --source-commit "$SOURCE_SHA" --builder-commit "$BUILDER_SHA"
+            echo "Validated existing immutable Runtime assets for $PLATFORM"
+            exit 0
+          else
+            echo "::error::Partial Runtime asset set exists for $PLATFORM: ${found[*]}"
+            exit 1
+          fi
+          gh release upload "$RUNTIME_TAG" "runtime-bundle/$ASSET" "runtime-bundle/$ASSET.sha256" "runtime-bundle/$MANIFEST" --repo "$GITHUB_REPOSITORY"
