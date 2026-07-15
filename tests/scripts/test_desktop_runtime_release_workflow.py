@@ -60,6 +60,25 @@ def test_desktop_runtime_workflow_uses_tagged_local_source_and_pinned_builder() 
     assert "==${{" not in text
 
 
+def test_desktop_runtime_workflow_bootstraps_python_before_reading_toml() -> None:
+    steps = _workflow()["jobs"]["build"]["steps"]
+    setup_index = next(
+        index for index, step in enumerate(steps) if step["name"] == "Setup Python"
+    )
+    identity_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step["name"] == "Resolve source identity and asset names"
+    )
+    setup = steps[setup_index]
+
+    assert setup_index < identity_index
+    assert setup["uses"] == (
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
+    )
+    assert setup["with"] == {"python-version": "3.12"}
+
+
 def test_desktop_runtime_workflow_uses_scoped_key_for_private_builder() -> None:
     steps = _workflow()["jobs"]["build"]["steps"]
     builder_checkout = next(
