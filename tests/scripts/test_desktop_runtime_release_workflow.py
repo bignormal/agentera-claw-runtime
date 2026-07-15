@@ -45,6 +45,7 @@ def test_desktop_runtime_workflow_uses_tagged_local_source_and_pinned_builder() 
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "repository: bignormal/agentera-claw" in text
     assert "ref: ${{ vars.DESKTOP_RUNTIME_BUILDER_SHA }}" in text
+    assert "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" in text
     assert "RUNTIME_PROVENANCE_SOURCE_COMMIT" in text
     assert "RUNTIME_PROVENANCE_BUILDER_COMMIT" in text
     assert "runtime-source[mcp,messaging,slack,wecom,dingtalk,feishu]" in text
