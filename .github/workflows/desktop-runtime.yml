@@ -169,7 +169,6 @@ jobs:
         env:
           TARGET_OS: ${{ matrix.target_os }}
           TARGET_ARCH: ${{ matrix.target_arch }}
-          GH_TOKEN: ${{ github.token }}
           HERMES_VERSION: ${{ steps.identity.outputs.version }}
           HERMES_PACKAGE: ${{ github.workspace }}/runtime-source[mcp,messaging,slack,wecom,dingtalk,feishu]
           HERMES_SKIP_BROWSER_RUNTIME: ${{ matrix.skip_browser_runtime || 'false' }}

@@ -59,3 +59,12 @@ def test_desktop_runtime_workflow_never_silently_clobbers_assets() -> None:
     upload_lines = [line for line in text.splitlines() if "gh release upload" in line]
     assert upload_lines
     assert all("--clobber" not in line for line in upload_lines)
+
+
+def test_desktop_runtime_workflow_does_not_expose_write_token_to_runtime_build() -> None:
+    steps = _workflow()["jobs"]["runtime"]["steps"]
+    prepare = next(step for step in steps if step["name"] == "Prepare Runtime from tagged local source")
+    upload = next(step for step in steps if step["name"] == "Upload immutable Runtime assets")
+
+    assert "GH_TOKEN" not in prepare.get("env", {})
+    assert upload["env"]["GH_TOKEN"] == "${{ github.token }}"
