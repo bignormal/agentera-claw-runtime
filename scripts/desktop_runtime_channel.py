@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 
 PLATFORM_TARGETS = {
@@ -56,6 +57,7 @@ def build_runtime_channel(
 ) -> dict[str, object]:
     if not release_tag:
         raise ValueError("Runtime release tag must not be empty")
+    encoded_release_tag = quote(release_tag, safe="")
     _validate_compatibility_range(
         min_desktop_version,
         max_desktop_version,
@@ -103,7 +105,7 @@ def build_runtime_channel(
         platforms[platform] = {
             "descriptor": (
                 f"https://github.com/{REPOSITORY}/releases/download/"
-                f"{release_tag}/hermes-runtime-{platform}.json"
+                f"{encoded_release_tag}/hermes-runtime-{platform}.json"
             )
         }
 
