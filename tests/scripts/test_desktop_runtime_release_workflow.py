@@ -23,6 +23,34 @@ def test_desktop_runtime_workflow_has_controlled_triggers_and_permissions() -> N
     assert workflow["jobs"]["publish"]["needs"] == "build"
 
 
+def test_desktop_runtime_workflow_publishes_stable_channel_after_all_platforms() -> None:
+    workflow = _workflow()
+    job = workflow["jobs"]["publish-channel"]
+    download = next(
+        step
+        for step in job["steps"]
+        if step["name"] == "Download all validated Runtime bundles"
+    )
+    generate = next(
+        step
+        for step in job["steps"]
+        if step["name"] == "Generate stable channel descriptor"
+    )
+
+    assert job["needs"] == "publish"
+    assert job["permissions"] == {"contents": "write"}
+    assert download["with"]["pattern"] == "desktop-runtime-*"
+    assert download["with"]["path"] == "runtime-channel-input"
+    assert download["with"]["merge-multiple"] == "true"
+    assert "python publisher/scripts/desktop_runtime_channel.py" in generate["run"]
+    assert "--directory runtime-channel-input" in generate["run"]
+    assert "--output agentera-runtime-stable.json" in generate["run"]
+    assert "min_desktop_version" in workflow["on"]["workflow_dispatch"]["inputs"]
+    assert "max_desktop_version" in workflow["on"]["workflow_dispatch"]["inputs"]
+    assert "min_webui_version" in workflow["on"]["workflow_dispatch"]["inputs"]
+    assert "max_webui_version" in workflow["on"]["workflow_dispatch"]["inputs"]
+
+
 def test_desktop_runtime_workflow_builds_the_complete_platform_matrix() -> None:
     workflow = _workflow()
     matrix = workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
