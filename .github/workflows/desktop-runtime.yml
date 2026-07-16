@@ -14,6 +14,26 @@ on:
         required: false
         default: false
         type: boolean
+      min_desktop_version:
+        description: Minimum compatible AgentEra desktop version
+        required: false
+        default: "0.6.29"
+        type: string
+      max_desktop_version:
+        description: Maximum compatible AgentEra desktop version
+        required: false
+        default: "0.6.29"
+        type: string
+      min_webui_version:
+        description: Minimum compatible AgentEra Web UI version
+        required: false
+        default: "0.6.29"
+        type: string
+      max_webui_version:
+        description: Maximum compatible AgentEra Web UI version
+        required: false
+        default: "0.6.29"
+        type: string
 
 permissions:
   contents: read
@@ -354,3 +374,64 @@ jobs:
             exit 1
           fi
           gh release upload "$RUNTIME_TAG" "runtime-bundle/$ASSET" "runtime-bundle/$ASSET.sha256" "runtime-bundle/$MANIFEST" --repo "$GITHUB_REPOSITORY"
+
+  publish-channel:
+    name: Publish Runtime stable channel
+    needs: publish
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MIN_DESKTOP_VERSION: ${{ inputs.min_desktop_version || vars.RUNTIME_MIN_DESKTOP_VERSION || '0.6.29' }}
+      MAX_DESKTOP_VERSION: ${{ inputs.max_desktop_version || vars.RUNTIME_MAX_DESKTOP_VERSION || '0.6.29' }}
+      MIN_WEBUI_VERSION: ${{ inputs.min_webui_version || vars.RUNTIME_MIN_WEBUI_VERSION || '0.6.29' }}
+      MAX_WEBUI_VERSION: ${{ inputs.max_webui_version || vars.RUNTIME_MAX_WEBUI_VERSION || '0.6.29' }}
+      REPLACE: ${{ inputs.replace_existing || 'false' }}
+
+    steps:
+      - name: Checkout trusted publisher tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: publisher
+          persist-credentials: false
+
+      - name: Download all validated Runtime bundles
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: desktop-runtime-*
+          path: runtime-channel-input
+          merge-multiple: true
+
+      - name: Generate stable channel descriptor
+        shell: bash
+        run: |
+          python publisher/scripts/desktop_runtime_channel.py \
+            --directory runtime-channel-input \
+            --release-tag "$RUNTIME_TAG" \
+            --min-desktop-version "$MIN_DESKTOP_VERSION" \
+            --max-desktop-version "$MAX_DESKTOP_VERSION" \
+            --min-webui-version "$MIN_WEBUI_VERSION" \
+            --max-webui-version "$MAX_WEBUI_VERSION" \
+            --output agentera-runtime-stable.json
+
+      - name: Upload immutable stable channel descriptor
+        shell: bash
+        run: |
+          existing="$(gh release view "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if printf '%s\n' "$existing" | grep -Fx agentera-runtime-stable.json >/dev/null; then
+            if [ "$REPLACE" = "true" ]; then
+              gh release delete-asset "$RUNTIME_TAG" agentera-runtime-stable.json --repo "$GITHUB_REPOSITORY" --yes
+            else
+              mkdir existing-channel
+              gh release download "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --pattern agentera-runtime-stable.json --dir existing-channel
+              if cmp -s agentera-runtime-stable.json existing-channel/agentera-runtime-stable.json; then
+                echo "Validated existing immutable Runtime stable channel"
+                exit 0
+              fi
+              echo "::error::Existing Runtime stable channel differs from generated descriptor"
+              exit 1
+            fi
+          fi
+          gh release upload "$RUNTIME_TAG" agentera-runtime-stable.json --repo "$GITHUB_REPOSITORY"

@@ -23,6 +23,23 @@ def test_desktop_runtime_workflow_has_controlled_triggers_and_permissions() -> N
     assert workflow["jobs"]["publish"]["needs"] == "build"
 
 
+def test_desktop_runtime_workflow_publishes_stable_channel_after_all_platforms() -> None:
+    workflow = _workflow()
+    job = workflow["jobs"]["publish-channel"]
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert job["needs"] == "publish"
+    assert job["permissions"] == {"contents": "write"}
+    assert "agentera-runtime-stable.json" in text
+    assert "scripts/desktop_runtime_channel.py" in text
+    assert "runtime-channel-input" in text
+    assert "merge-multiple" in text
+    assert "min_desktop_version" in workflow["on"]["workflow_dispatch"]["inputs"]
+    assert "max_desktop_version" in workflow["on"]["workflow_dispatch"]["inputs"]
+    assert "min_webui_version" in workflow["on"]["workflow_dispatch"]["inputs"]
+    assert "max_webui_version" in workflow["on"]["workflow_dispatch"]["inputs"]
+
+
 def test_desktop_runtime_workflow_builds_the_complete_platform_matrix() -> None:
     workflow = _workflow()
     matrix = workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
