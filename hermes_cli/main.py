@@ -12404,7 +12404,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
+        "model", "pairing", "pets", "platform", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
@@ -12949,6 +12949,23 @@ def main():
     # model command  (parser built in hermes_cli/subcommands/model.py)
     # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
+
+    # =========================================================================
+    # platform command — explicit opt-in AgentEra control registration
+    # =========================================================================
+    from hermes_cli.platform_control_cli import platform_command
+
+    platform_parser = subparsers.add_parser(
+        "platform",
+        help="Manage explicit AgentEra platform control enrollment",
+    )
+    platform_subparsers = platform_parser.add_subparsers(dest="platform_action")
+    platform_enroll = platform_subparsers.add_parser("enroll", help="Enroll this Runtime")
+    platform_enroll.add_argument("--url", required=True, help="AgentEra platform HTTPS URL")
+    platform_enroll.add_argument("--code", required=True, help="One-time enrollment code")
+    platform_subparsers.add_parser("status", help="Show enrollment status")
+    platform_subparsers.add_parser("disable", help="Disable control and remove the device identity")
+    platform_parser.set_defaults(func=platform_command)
 
     from hermes_cli.moa_cmd import cmd_moa
 

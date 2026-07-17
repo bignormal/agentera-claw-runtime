@@ -21086,6 +21086,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_code is not None:
             raise SystemExit(runner.exit_code)
         return True
+
+    # Platform control is strictly opt-in. Without enabled config and a local
+    # 0600 identity this creates no task and performs no network lookup.
+    from hermes_cli.platform_control import start_platform_control_if_enabled
+    platform_stop = asyncio.Event()
+    platform_task = start_platform_control_if_enabled(platform_stop)
     
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the
@@ -21126,6 +21132,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
+
+    platform_stop.set()
+    if platform_task is not None:
+        try:
+            await asyncio.wait_for(platform_task, timeout=5)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            platform_task.cancel()
 
     try:
         from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
